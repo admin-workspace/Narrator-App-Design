@@ -1,0 +1,346 @@
+import React, { useState } from 'react';
+import { Play, Volume2, Film, Loader2, Sparkles, Mic2, RefreshCw, Download, Clock, AlertTriangle, FastForward, Gamepad2 } from 'lucide-react';
+
+const App = () => {
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [audioUrl, setAudioUrl] = useState(null);
+  const [text, setText] = useState("In a world... where shadows whisper and secrets burn. One hero must face the darkness... Coming this summer.");
+  const [voice, setVoice] = useState("Charon"); // Default deep voice
+  const [speed, setSpeed] = useState("normal"); // Speed state
+  const [theme, setTheme] = useState("cinematic"); // Theme state
+  
+  const apiKey = ""; // Environment provides this at runtime
+
+  const voiceProfiles = {
+    cinematic: [
+      { id: "Charon", name: "The Narrator", desc: "Deep, gravelly, epic" },
+      { id: "Orus", name: "The General", desc: "Stern, commanding, gritty" },
+      { id: "Kore", name: "The Oracle", desc: "Sophisticated, ethereal" },
+      { id: "Leda", name: "The Heroine", desc: "Dramatic, serious, strong" }
+    ],
+    gaming: [
+      { id: "Puck", name: "The Caster", desc: "Hype, energetic, fast" },
+      { id: "Fenrir", name: "The Final Boss", desc: "Dark, imposing, intense" },
+      { id: "Zephyr", name: "The Player 1", desc: "Warm, confident, clear" },
+      { id: "Aoede", name: "The Announcer", desc: "Dynamic, sharp, loud" }
+    ]
+  };
+
+  const speeds = [
+    { id: "slow", name: "Slow", desc: "Deliberate & drawn out" },
+    { id: "normal", name: "Normal", desc: "Standard pacing" },
+    { id: "fast", name: "Fast", desc: "Urgent & rapid" }
+  ];
+
+  const pcmToWav = (pcmData, sampleRate) => {
+    const buffer = new ArrayBuffer(44 + pcmData.length * 2);
+    const view = new DataView(buffer);
+    const writeString = (offset, string) => {
+      for (let i = 0; i < string.length; i++) view.setUint8(offset + i, string.charCodeAt(i));
+    };
+    writeString(0, 'RIFF');
+    view.setUint32(4, 32 + pcmData.length * 2, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeString(36, 'data');
+    view.setUint32(40, pcmData.length * 2, true);
+    for (let i = 0; i < pcmData.length; i++) view.setInt16(44 + i * 2, pcmData[i], true);
+    return new Blob([buffer], { type: 'audio/wav' });
+  };
+
+  const generateVoice = async () => {
+    if (!text.trim()) return;
+    setIsLoading(true);
+    setError(null);
+
+    const themeInstructions = {
+      cinematic: "dramatic movie trailer narrator",
+      gaming: "intense and energetic video game announcer"
+    };
+
+    const speedInstructions = {
+      slow: "Read it very slowly, drawing out words with long pauses.",
+      normal: "Read it with standard pacing and pauses for effect.",
+      fast: "Read it quickly and urgently, with very minimal pauses."
+    };
+
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${apiKey}`;
+    
+    const payload = {
+      contents: [{
+        parts: [{ 
+          text: `Read the following script as a ${themeInstructions[theme]}. ${speedInstructions[speed]} Script: ${text}` 
+        }]
+      }],
+      generationConfig: {
+        responseModalities: ["AUDIO"],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: {
+              voiceName: voice 
+            }
+          }
+        }
+      }
+    };
+
+    let retries = 0;
+    const maxRetries = 5;
+
+    const attemptFetch = async () => {
+      try {
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) throw new Error('API request failed');
+
+        const result = await response.json();
+        const audioPart = result.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+
+        if (!audioPart) throw new Error('No audio data received');
+
+        const sampleRateMatch = audioPart.inlineData.mimeType.match(/rate=(\d+)/);
+        const sampleRate = sampleRateMatch ? parseInt(sampleRateMatch[1]) : 24000;
+
+        const binaryString = atob(audioPart.inlineData.data);
+        let pcmData = new Int16Array(binaryString.length / 2);
+        for (let i = 0; i < pcmData.length; i++) {
+          pcmData[i] = (binaryString.charCodeAt(i * 2 + 1) << 8) | binaryString.charCodeAt(i * 2);
+        }
+
+        const wavBlob = pcmToWav(pcmData, sampleRate);
+        const url = URL.createObjectURL(wavBlob);
+        setAudioUrl(url);
+        playAudio(url);
+      } catch (err) {
+        if (retries < maxRetries) {
+          retries++;
+          setTimeout(attemptFetch, Math.pow(2, retries) * 1000);
+        } else {
+          setError("Failed to generate voice. Please check connection and try again.");
+          setIsLoading(false);
+        }
+      }
+    };
+
+    attemptFetch();
+  };
+
+  const playAudio = (url) => {
+    const audio = new Audio(url);
+
+    audio.onplay = () => { setIsPlaying(true); setIsLoading(false); };
+    audio.onended = () => { setIsPlaying(false); };
+    audio.onerror = () => { 
+      setError("Playback error."); 
+      setIsPlaying(false); 
+      setIsLoading(false); 
+    };
+    audio.play();
+  };
+
+  const handleThemeChange = (newTheme) => {
+    setTheme(newTheme);
+    // Automatically switch to the first voice in the new theme's roster
+    setVoice(voiceProfiles[newTheme][0].id);
+  };
+
+  return (
+    <div className="min-h-screen bg-neutral-950 text-neutral-100 flex flex-col items-center justify-center p-4 md:p-8 font-sans selection:bg-red-500/30">
+      <div className="max-w-2xl w-full space-y-6">
+        
+        {/* Header */}
+        <div className="text-center space-y-3">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-red-600/10 border border-red-500/20 text-red-500 text-[10px] uppercase tracking-widest font-bold">
+            <Sparkles className="w-3 h-3" /> AI Studio
+          </div>
+          <h1 className="text-5xl font-black tracking-tighter uppercase italic">
+            VOICE <span className="text-red-600">OVER</span>
+          </h1>
+          <p className="text-neutral-500 text-sm max-w-sm mx-auto leading-relaxed">
+            Convert your script into a cinematic masterpiece using high-fidelity AI narration.
+          </p>
+        </div>
+
+        {/* Workspace */}
+        <div className="grid gap-6">
+          <div className="space-y-6 animate-in fade-in duration-300">
+            {/* Text Input */}
+            <div className="relative group">
+              <div className="absolute -inset-0.5 bg-gradient-to-r from-red-600 to-blue-600 rounded-2xl blur opacity-20 group-focus-within:opacity-40 transition duration-500"></div>
+              <div className="relative bg-neutral-900 border border-neutral-800 rounded-2xl overflow-hidden">
+                <div className="flex items-center justify-between px-4 py-3 bg-neutral-800/50 border-b border-neutral-800">
+                  <span className="flex items-center gap-2 text-[10px] uppercase tracking-widest font-bold text-neutral-500">
+                    <Clock className="w-3 h-3" /> Script Editor
+                  </span>
+                  <span className="text-[10px] text-neutral-600">
+                    {text.trim().split(/\s+/).filter(w => w.length > 0).length} words
+                  </span>
+                </div>
+                <textarea
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  className="w-full h-40 bg-transparent p-6 text-lg font-serif italic text-neutral-300 focus:outline-none resize-none placeholder:text-neutral-700"
+                  placeholder="Enter your epic script here..."
+                />
+              </div>
+            </div>
+
+            {/* Theme Selector */}
+            <div className="space-y-3 pt-2">
+              <div className="flex items-center gap-1.5 px-1">
+                <Gamepad2 className="w-3 h-3 text-neutral-500" />
+                <span className="text-[10px] uppercase tracking-widest font-bold text-neutral-500">Theme</span>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                {[
+                  { id: "cinematic", name: "Cinematic", desc: "Movie Trailer Style" },
+                  { id: "gaming", name: "Gaming", desc: "Esports & Game Announcer" }
+                ].map((t) => (
+                  <button
+                    key={t.id}
+                    onClick={() => handleThemeChange(t.id)}
+                    className={`p-3 rounded-xl border text-left transition-all ${
+                      theme === t.id 
+                      ? 'bg-purple-600 border-purple-500 shadow-lg shadow-purple-900/20' 
+                      : 'bg-neutral-900 border-neutral-800 hover:border-neutral-700'
+                    }`}
+                  >
+                    <div className={`text-xs font-bold uppercase ${theme === t.id ? 'text-white' : 'text-neutral-400'}`}>{t.name}</div>
+                    <div className={`text-[10px] truncate ${theme === t.id ? 'text-purple-100' : 'text-neutral-600'}`}>{t.desc}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Voice Profile */}
+            <div className="space-y-3 pt-4 border-t border-neutral-800">
+              <div className="text-[10px] uppercase tracking-widest font-bold text-neutral-500 px-1">Voice Profile ({theme})</div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {voiceProfiles[theme].map((v) => (
+                  <button
+                    key={v.id}
+                    onClick={() => setVoice(v.id)}
+                    className={`p-3 rounded-xl border text-left transition-all ${
+                      voice === v.id 
+                      ? 'bg-red-600 border-red-500 shadow-lg shadow-red-900/20' 
+                      : 'bg-neutral-900 border-neutral-800 hover:border-neutral-700'
+                    }`}
+                  >
+                    <div className={`text-xs font-bold uppercase ${voice === v.id ? 'text-white' : 'text-neutral-400'}`}>{v.name}</div>
+                    <div className={`text-[10px] truncate ${voice === v.id ? 'text-red-100' : 'text-neutral-600'}`}>{v.desc}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Narration Speed */}
+            <div className="space-y-3 pt-4 border-t border-neutral-800">
+              <div className="flex items-center gap-1.5 px-1">
+                <FastForward className="w-3 h-3 text-neutral-500" />
+                <span className="text-[10px] uppercase tracking-widest font-bold text-neutral-500">Narration Speed</span>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                {speeds.map((s) => (
+                  <button
+                    key={s.id}
+                    onClick={() => setSpeed(s.id)}
+                    className={`p-3 rounded-xl border text-left transition-all ${
+                      speed === s.id 
+                      ? 'bg-amber-600 border-amber-500 shadow-lg shadow-amber-900/20' 
+                      : 'bg-neutral-900 border-neutral-800 hover:border-neutral-700'
+                    }`}
+                  >
+                    <div className={`text-xs font-bold uppercase ${speed === s.id ? 'text-white' : 'text-neutral-400'}`}>{s.name}</div>
+                    <div className={`text-[10px] truncate ${speed === s.id ? 'text-amber-100' : 'text-neutral-600'}`}>{s.desc}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        {/* Error */}
+        {error && (
+          <div className="p-4 rounded-xl bg-red-950/30 border border-red-900/50 text-red-400 text-sm text-center">
+            {error}
+          </div>
+        )}
+
+        {/* Controls */}
+        <div className="flex items-center justify-center gap-4">
+          <button
+            onClick={() => audioUrl && !isPlaying ? playAudio(audioUrl) : generateVoice()}
+            disabled={isLoading || isPlaying}
+            className={`
+              flex-1 md:flex-none flex items-center justify-center gap-3 px-10 py-4 rounded-full text-lg font-black transition-all transform active:scale-95
+              ${(isLoading || isPlaying) 
+                ? 'bg-neutral-800 text-neutral-600' 
+                : 'bg-white text-black hover:bg-neutral-200 shadow-xl'}
+            `}
+          >
+            {isLoading ? (
+              <Loader2 className="w-6 h-6 animate-spin" />
+            ) : isPlaying ? (
+              <Volume2 className="w-6 h-6 animate-pulse text-red-600" />
+            ) : (
+              <Mic2 className="w-6 h-6" />
+            )}
+            {isLoading ? 'Processing' : isPlaying ? 'Playing' : audioUrl ? 'Play Again' : 'Render Audio'}
+          </button>
+
+          {audioUrl && (
+            <>
+              <a 
+                href={audioUrl}
+                download={`voiceover_${voice.toLowerCase()}.wav`}
+                className="flex items-center justify-center p-4 rounded-full bg-neutral-900 border border-neutral-800 hover:bg-neutral-800 hover:text-white text-neutral-400 transition-colors"
+                title="Download Audio"
+              >
+                <Download className="w-6 h-6" />
+              </a>
+              <button 
+                onClick={() => { setAudioUrl(null); }}
+                className="p-4 rounded-full bg-neutral-900 border border-neutral-800 hover:bg-neutral-800 hover:text-white text-neutral-400 transition-colors"
+                title="Reset"
+              >
+                <RefreshCw className="w-6 h-6" />
+              </button>
+            </>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex justify-between items-center text-[10px] text-neutral-700 uppercase tracking-widest font-bold pt-4 border-t border-neutral-900">
+          <div className="flex items-center gap-2">
+            <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></div>
+            System Online
+          </div>
+          <div className="flex gap-4">
+            <span>24bit PCM</span>
+            <span>48kHz Ready</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Background Ambience */}
+      <div className="fixed inset-0 -z-10 bg-[radial-gradient(circle_at_50%_50%,rgba(20,20,20,1)_0%,rgba(0,0,0,1)_100%)]"></div>
+      <div className="fixed top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-red-600/50 to-transparent"></div>
+    </div>
+  );
+};
+
+export default App;
